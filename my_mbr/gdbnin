@@ -1,3 +1,0 @@
-define hookpost-si4
-  x/4i $pc
-end
