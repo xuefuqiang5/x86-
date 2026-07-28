@@ -42,7 +42,7 @@ void idt_init() {
   for(int i=0; i<IDTSIZE; i++)
     idt_unregister(i);
   
-  idtr.limit = IDTSIZE * sizeof(struct gatedesc);
+  idtr.limit = IDTSIZE * sizeof(struct gatedesc) - 1;
   idtr.base = idt;
   lidt(&idtr);
 }

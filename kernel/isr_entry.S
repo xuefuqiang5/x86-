@@ -20,9 +20,13 @@ intr%1entry:
     push fs
     push gs
     pushad
+%if %1 >= 0x20
     mov al, 0x20
+%if %1 >= 0x28
     out 0xa0, al
+%endif
     out 0x20, al
+%endif
     push %1
     call [idt_table + %1*4]
     jmp intr_exit

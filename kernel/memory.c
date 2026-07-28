@@ -101,23 +101,21 @@ void *phy_allocate(Ppl *pool){
     return (void *)(pool->addr_start + start_idx * PAGE_SIZE);
 }
 void page_register(void *vaddr, void *paddr){
-    uint32_t *pde = (uint32_t *)(uintptr_t)((GET_PDE((uint32_t)(uintptr_t)vaddr) << 12) | 0xffc00000);
-    uint32_t item = pde[0];
-    if(!(item & PG_P_1)){
-        item |= PG_P_1;
-        item |= PG_RW_W;
-        item |= PG_US_U;
-        pde[0] = item;    
+    uint32_t vaddr_val = (uint32_t)(uintptr_t)vaddr;
+    uint32_t pde_idx = GET_PDE(vaddr_val);
+    uint32_t pte_idx = GET_PTE(vaddr_val);
+
+    uint32_t *pde_entry = (uint32_t *)(uintptr_t)(0xFFFFF000 | (pde_idx << 2));
+    uint32_t *pte_table = (uint32_t *)(uintptr_t)((pde_idx << 12) | 0xFFC00000);
+
+    if (!(*pde_entry & PG_P_1)) {
+        void *pt_phy = phy_allocate(&phy_ker_pool);
+        if (pt_phy == NULL) return;
+        *pde_entry = ((uint32_t)(uintptr_t)pt_phy & 0xFFFFF000) | PG_US_U | PG_RW_W | PG_P_1;
+        memset(pte_table, 0, PAGE_SIZE);
     }
-    uint32_t *pte = (uint32_t *)(uintptr_t)((uint32_t)(uintptr_t)pde + (GET_PTE((uint32_t)(uintptr_t)vaddr) << 2));
-    item = pte[0];
-    if(!(item & PG_P_1)){
-        item |= PG_P_1;
-        item |= PG_RW_W;
-        item |= PG_US_U;    
-        pte[0] = item;
-    }
-    pte[0] |= (uint32_t)paddr & 0xfffff000;
+
+    pte_table[pte_idx] = ((uint32_t)(uintptr_t)paddr & 0xFFFFF000) | PG_US_U | PG_RW_W | PG_P_1;
 }
 //建立映射关系
 void* page_allocate(uint32_t cnt, enum pool_flags pool_flag){
