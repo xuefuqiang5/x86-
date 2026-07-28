@@ -1,9 +1,10 @@
-CC = gcc
-LD = ld
-CFLAGS = -m32 -ffreestanding -nostdlib -fno-stack-protector -O0 -g -Wall -Wextra
+CC = x86_64-elf-gcc
+LD = x86_64-elf-ld
+CFLAGS = -m32 -ffreestanding -nostdlib -fno-stack-protector -fno-pie \
+	-mno-sse -mno-sse2 -mno-mmx -msoft-float -O0 -g -Wall -Wextra
 ASFLAGS = -m32 -g
 TARGET_DIR = ../bin
-LDFLAGS = -T link.ld
+LDFLAGS = -m elf_i386 -T link.ld
 LIBRARY = ../bin/libklib.a
 
 SRC_C = $(wildcard *.c)
@@ -19,7 +20,7 @@ TARGET = $(TARGET_DIR)/kernel
 build: $(TARGET)
 
 clean:
-	rm -rf $(TARGET_DIR)/*.o $(TARGET_DIR)/kernel $(LIBRARY)
+	rm -f $(TARGET_DIR)/*.o $(TARGET_DIR)/kernel $(TARGET_DIR)/kernel.sym $(LIBRARY)
 	make -C ../lib/kernel clean
 
 $(LIBRARY):
@@ -44,12 +45,12 @@ $(TARGET_DIR)/%.o: %.S | $(TARGET_DIR)
 # 链接
 $(TARGET): $(OBJ) $(LIBRARY)
 	@echo "Linking $@"
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -z noexecstack
+	$(LD) $(LDFLAGS) -o $@ $^
 
 
 gdb_symol:
 	@echo "generate symbol table...."
-	objcopy --only-keep-debug $(TARGET_DIR)/kernel $(TARGET_DIR)/kernel.sym
+	x86_64-elf-objcopy --only-keep-debug $(TARGET_DIR)/kernel $(TARGET_DIR)/kernel.sym
 
 clean_intermediate:
 	rm -rf *.o

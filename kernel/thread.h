@@ -99,4 +99,5 @@ void init_main_thread();
 void init_list();
 struct task_struct* running_thread();
 void thread_block(enum task_status stasus);
-void thread_unblock(struct task_struct *pthread); 
+void thread_unblock(struct task_struct *pthread);
+extern void switch_to(struct task_struct *cur, struct task_struct *next);

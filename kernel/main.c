@@ -11,7 +11,7 @@ int main(){
     }
     return 0; 
 }
-void k_thread_a(void *arg) {
+void k_thread_a(void *arg __attribute__((unused))) {
     while(1) {
         uint32_t old_status = intr_disable();
         if(!ioq_is_empty(&keyboard_buf)){

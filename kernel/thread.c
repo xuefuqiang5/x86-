@@ -22,8 +22,17 @@ void thread_create(struct task_struct* pthread, thread_func function, void* func
     kthread_stack->func_arg = func_arg;
     kthread_stack->ebp = kthread_stack->ebx = kthread_stack->edi = kthread_stack->esi = 0;
 }
+
+static int streq(const char *a, const char *b) {
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
 void init_thread(struct task_struct* pthread, char* name, int prio){
-    if(name != "main") memset(pthread, 0, PAGE_SIZE);
+    if(!streq(name, "main")) memset(pthread, 0, PAGE_SIZE);
     strcpy(pthread->name, name);
     if(pthread == main_thread){
         pthread->status = TASK_RUNNING;

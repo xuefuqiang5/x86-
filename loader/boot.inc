@@ -3,8 +3,7 @@
  CODE_SELECTOR equ 0x8
  DATA_SELECTOR equ 0x10
  VIDEO_SELECTOR equ 0x18
- PAGE_DIR_TABLE_POS equ 0x100000
- PAGE_DIR_TABLE_POS equ 0x100000
+ PAGE_DIR_TABLE_POS equ 0x10000
  PG_P  equ   1b 
  PG_RW_R  equ  00b 
  PG_RW_W equ  10b 
@@ -41,4 +40,4 @@ P_ALIGN     equ 0x1C    ; p_align offset
 
 
 PT_LOAD equ 1
-total_mem_addr equ 0xb00
+total_mem_addr equ 0x8000

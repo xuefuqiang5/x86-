@@ -49,5 +49,5 @@ void ioq_putchar(char c, struct ioqueue *i){
     }
     i->buf[i->head] = c;
     i->head = next_pos(i->head);
-    if(i->consumer != NULL) ioq_wakeup(i->consumer);
+    if(i->consumer != NULL) ioq_wakeup(&i->consumer);
 }

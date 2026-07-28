@@ -24,7 +24,6 @@ void mem_pool_init(uint32_t total_mem){
     uint32_t phy_usr_size = 0;
     uint32_t vir_ker_bmp_start = 0;
     uint32_t heap_base = 0;
-    uint32_t vir_usr_bmp_start = 0;
     used_mem = 0x100000 + 256 * PAGE_SIZE;
     free_mem = total_mem - used_mem;
     phy_ker_size = free_mem / 2;
@@ -33,23 +32,23 @@ void mem_pool_init(uint32_t total_mem){
     phy_usr_pool_base = phy_ker_pool_base + phy_ker_size;
     uint32_t ker_bitmap_byte_size = phy_ker_size / PAGE_SIZE / 8;
     uint32_t usr_bitmap_byte_size = phy_usr_size / PAGE_SIZE / 8; 
-    phy_ker_bmp_start =(void *) bitmap_base;
+    phy_ker_bmp_start = bitmap_base;
     phy_usr_bmp_start = phy_ker_bmp_start + ker_bitmap_byte_size;  
     phy_ker_pool.addr_start = phy_ker_pool_base;
     phy_ker_pool.pool_size = phy_ker_size;
-    phy_ker_pool.phy_bitmap.bits = (void *)phy_ker_bmp_start;
+    phy_ker_pool.phy_bitmap.bits = (uint8_t *)(uintptr_t)phy_ker_bmp_start;
     phy_ker_pool.phy_bitmap.byte_size = ker_bitmap_byte_size;
     init_bitmap(&phy_ker_pool.phy_bitmap);
     phy_usr_pool.addr_start = phy_usr_pool_base;
     phy_usr_pool.pool_size = phy_usr_size;
-    phy_usr_pool.phy_bitmap.bits = (void *)phy_usr_bmp_start;
+    phy_usr_pool.phy_bitmap.bits = (uint8_t *)(uintptr_t)phy_usr_bmp_start;
     phy_usr_pool.phy_bitmap.byte_size = usr_bitmap_byte_size;
     init_bitmap(&phy_usr_pool.phy_bitmap);
     vir_ker_bmp_start = phy_usr_bmp_start + usr_bitmap_byte_size;
     heap_base = PAGE_ALIGN_UP(vir_ker_bmp_start + ker_bitmap_byte_size);
     vir_ker_pool.addr_start = heap_base;
     vir_ker_pool.vir_bitmap.byte_size = ker_bitmap_byte_size;
-    vir_ker_pool.vir_bitmap.bits = (void *) vir_ker_bmp_start;
+    vir_ker_pool.vir_bitmap.bits = (uint8_t *)(uintptr_t)vir_ker_bmp_start;
     init_bitmap(&vir_ker_pool.vir_bitmap);
     
 }
@@ -77,7 +76,7 @@ void print_ppl(Ppl *ppl) {
     put_int_hex(ppl->pool_size);  // 打印内存池大小
 }
 void mem_init() { 
-    total_mem = *(uint32_t *)(0xb00);
+    total_mem = *(uint32_t *)(uintptr_t)0x8000;
     put_str("the total memory is: \n");
     put_int_hex(total_mem);
     put_char('\n');
@@ -92,8 +91,9 @@ void *vir_allocate(uint32_t cnt, enum pool_flags pool_flag){
         return (void *)(vir_ker_pool.addr_start + start_idx * PAGE_SIZE);
     }
     if(pool_flag == PF_USER){
-        return (void *)vir_usr_pool.addr_start;
+        return (void *)(uintptr_t)vir_usr_pool.addr_start;
     }
+    return NULL;
 }
 void *phy_allocate(Ppl *pool){
     Bitmap *bmp = &pool->phy_bitmap;
@@ -101,7 +101,7 @@ void *phy_allocate(Ppl *pool){
     return (void *)(pool->addr_start + start_idx * PAGE_SIZE);
 }
 void page_register(void *vaddr, void *paddr){
-    uint32_t *pde = (GET_PDE((uint32_t) vaddr) << 12) | 0xffc00000;
+    uint32_t *pde = (uint32_t *)(uintptr_t)((GET_PDE((uint32_t)(uintptr_t)vaddr) << 12) | 0xffc00000);
     uint32_t item = pde[0];
     if(!(item & PG_P_1)){
         item |= PG_P_1;
@@ -109,7 +109,7 @@ void page_register(void *vaddr, void *paddr){
         item |= PG_US_U;
         pde[0] = item;    
     }
-    uint32_t *pte = (uint32_t)pde + (GET_PTE((uint32_t) vaddr) << 2);
+    uint32_t *pte = (uint32_t *)(uintptr_t)((uint32_t)(uintptr_t)pde + (GET_PTE((uint32_t)(uintptr_t)vaddr) << 2));
     item = pte[0];
     if(!(item & PG_P_1)){
         item |= PG_P_1;

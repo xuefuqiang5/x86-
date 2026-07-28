@@ -8,7 +8,6 @@
 void general_program(uint32_t vecnum);
 //extern void *isr_entry_table[33];
 extern void *intr_entry_table[IDT_DESC_CNT];
-static int flag = 0;
 typedef void (*isr_func)(void);
 extern void* idt_table[IDT_DESC_CNT];
 #define CONCAT(X, Y) X##Y
@@ -19,4 +18,3 @@ void register_intr_handler(uint32_t vecnum, isr_func func);
 void keyboard_intr_handler();
 #define KEY_PORT 0x60
 
-    

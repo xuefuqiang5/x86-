@@ -26,24 +26,27 @@ detected_memory:
     xor eax, eax
     mov es, ax 
     mov edi, ards_buf
-    mov ecx, 20
     mov edx, 0x534d4150 
-    .probe_loop:
+.probe_loop:
         mov eax, 0xe820
+        mov ecx, 20
         int 0x15
         jc .probe_end
-        cmp ebx, 0
-        je .probe_end
+        cmp eax, 0x534d4150
+        jne .probe_end
         add di, cx
         inc dword [es:ards_count]
-        loop .probe_loop
-    .probe_end
-    .culculate_memory:
+        test ebx, ebx
+        jnz .probe_loop
+.probe_end:
+.culculate_memory:
         mov word cx, [es:ards_count]
         mov edi, ards_buf
         xor eax, eax
+        test cx, cx
+        jz .calculate_done
         push eax
-        .cmp_loop: 
+.cmp_loop:
             mov eax, [es:edi]
             mov edx, [es:edi + 8]
             add eax, edx
@@ -59,11 +62,15 @@ detected_memory:
                 add edi, 20 
                 loop .cmp_loop
             pop eax 
-            ret 
+.calculate_done:
+            ret
     
 loader_start:
     call detected_memory
     mov [es:total_mem_addr], eax
+    mov dx, 0x3f8
+    mov al, 'L'
+    out dx, al
     mov eax, 0x00
     mov ds, eax
     in al, 0x92
@@ -77,6 +84,9 @@ loader_start:
 
 [bits 32]
 p_mode_start:
+    mov dx, 0x3f8
+    mov al, 'P'
+    out dx, al
     mov ax, DATA_SELECTOR 
     mov ds, ax 
     mov es, ax 
@@ -86,12 +96,18 @@ p_mode_start:
     mov ax, VIDEO_SELECTOR 
     mov gs, ax 
     mov esi, msg
-    call print_string 
+    call print_string
+    mov dx, 0x3f8
+    mov al, 'D'
+    out dx, al
 
     mov eax, KERNEL_START_SECTOR
     mov ebx, KERNEL_START_ADDR
     mov ecx, 200
     call read_disk_m_32
+    mov dx, 0x3f8
+    mov al, 'E'
+    out dx, al
     call setup_page_table
     sgdt [gdt_ptr]
     mov ebx, [gdt_ptr + 2]
@@ -106,101 +122,142 @@ p_mode_start:
     jmp CODE_SELECTOR:enter_kernel
 enter_kernel:
     call kernel_init
+    mov dx, 0x3f8
+    mov al, 'X'
+    out dx, al
     mov eax, VIDEO_SELECTOR
     mov gs, eax
     mov esi, msg1
     call print_string
     mov esp, 0xc009f000
+    mov dx, 0x3f8
+    mov al, 'Y'
+    out dx, al
     jmp [vstart]
 
 setup_page_table:
-    mov eax, DATA_SELECTOR
-    mov ds, eax
-    mov ecx, 4096
+    pushad
+
+    ; Clear all 1024 page-directory entries.
     mov edi, PAGE_DIR_TABLE_POS
-    .clear_page_dir:
-        mov byte [edi], 0
-        inc edi
-        loop .clear_page_dir 
-    .setup_page_dir:
-        mov eax, PAGE_DIR_TABLE_POS
-        add eax, 0x1000
-        mov ebx, eax
-        or eax, PG_US_U | PG_RW_W | PG_P
-        mov [PAGE_DIR_TABLE_POS + 0x0], eax
-        mov [PAGE_DIR_TABLE_POS + 0xc00], eax
-        sub eax, 0x1000
-        mov [PAGE_DIR_TABLE_POS + 4092], eax        ;最后一个页目录表项指向自身
-    .setup_page_table:
-        mov ecx, 256
-        mov esi, 0
-        mov edx, PG_US_U | PG_RW_W | PG_P
-        .create_pte:
-            mov [ebx + esi * 4], edx
-            add edx, 4096
-            inc esi
-            loop .create_pte
-        .setup_kernel_pde:
-            mov eax, PAGE_DIR_TABLE_POS
-            add eax, 0x2000
-            or eax, PG_US_U | PG_RW_W | PG_P
-            mov ebx, PAGE_DIR_TABLE_POS
-            mov ecx, 254
-            mov esi, 769
-            .create_kernel_pde:
-                mov [ebx + esi * 4], eax
-                inc esi
-                add eax, 0x1000
-                loop .create_kernel_pde
-            ret
+    xor eax, eax
+    mov ecx, 1024
+    rep stosd
+
+    ; Identity-map the first MiB and mirror it at 0xc0000000.
+    mov eax, PAGE_DIR_TABLE_POS + 0x1000
+    or eax, PG_US_U | PG_RW_W | PG_P
+    mov [PAGE_DIR_TABLE_POS], eax
+    mov [PAGE_DIR_TABLE_POS + 0xc00], eax
+
+    ; Make the final PDE recursively map the page directory itself.
+    mov eax, PAGE_DIR_TABLE_POS
+    or eax, PG_US_U | PG_RW_W | PG_P
+    mov [PAGE_DIR_TABLE_POS + 4092], eax
+
+    mov edi, PAGE_DIR_TABLE_POS + 0x1000
+    mov eax, PG_US_U | PG_RW_W | PG_P
+    mov ecx, 256
+.create_identity_pte:
+    stosd
+    add eax, 4096
+    loop .create_identity_pte
+
+    ; Prepare the remaining kernel-space PDEs for later mappings.
+    mov edi, PAGE_DIR_TABLE_POS + 769 * 4
+    mov eax, PAGE_DIR_TABLE_POS + 0x2000
+    or eax, PG_US_U | PG_RW_W | PG_P
+    mov ecx, 254
+.create_kernel_pde:
+    stosd
+    add eax, 0x1000
+    loop .create_kernel_pde
+
+    popad
+    ret
 read_disk_m_32:
+    pushad
     mov esi, eax
-    mov al, cl
+    mov edi, ebx
+    mov ebp, ecx
+
+.next_sector:
+    mov al, 1
     mov dx, 0x1f2
-    out dx, al 
-    mov eax, esi 
+    out dx, al
+
+    mov eax, esi
     mov dx, 0x1f3
-    out dx, al 
+    out dx, al
     shr eax, 8
     mov dx, 0x1f4
-    out dx, al 
-    mov dx, 0x1f5
-    shr eax, 8
     out dx, al
-    mov dx, 0x1f6
     shr eax, 8
+    mov dx, 0x1f5
+    out dx, al
+    shr eax, 8
+    mov dx, 0x1f6
     and al, 0x0f
     or al, 0xe0
     out dx, al
-.read_data:
+
+    mov dx, 0x3f6
+    in al, dx
+    in al, dx
+    in al, dx
+    in al, dx
+
     mov dx, 0x1f7
     mov al, 0x20
-    out dx, al 
+    out dx, al
+
 .not_ready:
-    nop 
     in al, dx
-    and al, 0x88
-    cmp al, 0x08
-    jne .not_ready 
-.read_init: 
-    mov eax, ecx 
-    mov edx, 256
-    mul edx
-    mov ecx, eax
+    test al, 0x80
+    jnz .not_ready
+    test al, 0x01
+    jnz .disk_error
+    test al, 0x08
+    jz .not_ready
+
+    mov ecx, 256
     mov dx, 0x1f0
-.go_on:
-    in ax, dx 
-    mov [ebx], ax 
-    add ebx, 2
-    loop .go_on
+.read_word:
+    in ax, dx
+    mov [edi], ax
+    add edi, 2
+    loop .read_word
+
+    mov dx, 0x1f7
+.finish_sector:
+    in al, dx
+    test al, 0x80
+    jnz .finish_sector
+    test al, 0x01
+    jnz .disk_error
+    test al, 0x08
+    jnz .finish_sector
+
+    inc esi
+    dec ebp
+    jnz .next_sector
+    popad
     ret
+
+.disk_error:
+    mov dx, 0x3f8
+    mov al, '!'
+    out dx, al
+    cli
+    hlt
+    jmp .disk_error
 
 print_string:
     push eax
     push edi
     mov edi, 160
     .print_loop:
-        ds lodsb
+        lodsb
         cmp al, 0
         je print_end
         mov byte [gs:di], al
@@ -208,9 +265,9 @@ print_string:
         mov byte [gs:di], 0xa4
         inc di 
     jmp .print_loop
-    print_end
-    pop eax
+    print_end:
     pop edi
+    pop eax
     ret
    
 kernel_init:
@@ -256,4 +313,4 @@ memcpy:
 
 msg db "protect mode", 0
 msg1 db "kernel has been loaded!", 0
-vstart db 0x00000000
+vstart dd 0x00000000
