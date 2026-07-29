@@ -6,6 +6,10 @@ ASFLAGS = -m32 -g
 TARGET_DIR = ../bin
 LDFLAGS = -m elf_i386 -T link.ld
 LIBRARY = ../bin/libklib.a
+RUST_MANIFEST = ../rust/Cargo.toml
+RUST_TARGET = ../rust/targets/i686-x86-os.json
+RUST_TARGET_DIR = ../rust/target
+RUST_LIBRARY = $(RUST_TARGET_DIR)/i686-x86-os/release/libkernel_rs.a
 
 SRC_C = $(wildcard *.c)
 SRC_S = $(wildcard *.S)
@@ -23,7 +27,7 @@ clean:
 	rm -f $(TARGET_DIR)/*.o $(TARGET_DIR)/kernel $(TARGET_DIR)/kernel.sym $(LIBRARY)
 	make -C ../lib/kernel clean
 
-$(LIBRARY):
+$(LIBRARY): $(shell find ../lib/kernel -type f)
 	make -C ../lib/kernel build
 
 debug:
@@ -43,7 +47,17 @@ $(TARGET_DIR)/%.o: %.S | $(TARGET_DIR)
 	nasm -f elf32 -g -o $@ $<
 
 # 链接
-$(TARGET): $(OBJ) $(LIBRARY)
+$(RUST_LIBRARY): $(shell find ../rust/kernel-rs/src -type f) \
+		$(RUST_MANIFEST) ../rust/kernel-rs/Cargo.toml $(RUST_TARGET) ../rust-toolchain.toml
+	cargo build \
+		-Z build-std=core,compiler_builtins \
+		-Z json-target-spec \
+		--manifest-path $(RUST_MANIFEST) \
+		--target $(RUST_TARGET) \
+		--target-dir $(RUST_TARGET_DIR) \
+		--release
+
+$(TARGET): $(OBJ) $(RUST_LIBRARY) $(LIBRARY)
 	@echo "Linking $@"
 	$(LD) $(LDFLAGS) -o $@ $^
 

@@ -1,6 +1,15 @@
 #include "init.h"
+#include "rust.h"
+
 void init_all(){
     clear();
+    if (rust_kernel_probe() != RUST_PROBE_MAGIC) {
+        put_str("Rust kernel probe failed\n");
+        for (;;) {
+            intr_disable();
+        }
+    }
+    put_str("RUST_OK\n");
     idt_init();
     pic_init();
     timer_init();

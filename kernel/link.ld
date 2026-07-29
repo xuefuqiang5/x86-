@@ -5,20 +5,19 @@ SECTIONS
     . = 0xc0001500;
 
     .text : {
-        *(.text)
+        *(.text .text.*)
     }
 
     .rodata : {
-        *(.rodata)
+        *(.rodata .rodata.*)
     }
 
     .data : {
-        *(.data)
+        *(.data .data.*)
     }
 
     .bss : {
-        *(.bss)
+        *(.bss .bss.*)
         PROVIDE(_BSS_END = .);  
     }
 }
-
