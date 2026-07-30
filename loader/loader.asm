@@ -103,7 +103,7 @@ p_mode_start:
 
     mov eax, KERNEL_START_SECTOR
     mov ebx, KERNEL_START_ADDR
-    mov ecx, 200
+    mov ecx, KERNEL_SECTOR_COUNT
     call read_disk_m_32
     mov dx, 0x3f8
     mov al, 'E'
@@ -293,6 +293,12 @@ kernel_init:
         add eax, edx
         mov edi, [ebx + esi + P_VADDR]
         call memcpy
+        mov edi, [ebx + esi + P_VADDR]
+        add edi, [ebx + esi + P_FILESZ]
+        mov ecx, [ebx + esi + P_MEMSZ]
+        sub ecx, [ebx + esi + P_FILESZ]
+        xor eax, eax
+        rep stosb
         pop ecx
         .next:
             add esi, 32

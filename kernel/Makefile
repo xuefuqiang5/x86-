@@ -10,13 +10,14 @@ RUST_MANIFEST = ../rust/Cargo.toml
 RUST_TARGET = ../rust/targets/i686-x86-os.json
 RUST_TARGET_DIR = ../rust/target
 RUST_LIBRARY = $(RUST_TARGET_DIR)/i686-x86-os/release/libkernel_rs.a
+RUST_CARGO = $(shell rustup which cargo)
+RUST_RUSTC = $(shell rustup which rustc)
 
-SRC_C = $(wildcard *.c)
-SRC_S = $(wildcard *.S)
+SRC_C = main.c
+SRC_S = isr_entry.S switch_to.S
 OBJ = $(patsubst %.c,$(TARGET_DIR)/%.o,$(SRC_C)) \
 		$(patsubst %.S,$(TARGET_DIR)/%.o,$(SRC_S)) 
 		
-
 TARGET = $(TARGET_DIR)/kernel
 
 .PHONY: build clean debug
@@ -36,20 +37,18 @@ debug:
 $(TARGET_DIR):
 	mkdir -p $(TARGET_DIR)
 
-# 编译C文件
 $(TARGET_DIR)/%.o: %.c | $(TARGET_DIR)
 	@echo "Compiling $<"
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# 汇编ASM文件
 $(TARGET_DIR)/%.o: %.S | $(TARGET_DIR)
 	@echo "Assembling $<"
 	nasm -f elf32 -g -o $@ $<
 
-# 链接
 $(RUST_LIBRARY): $(shell find ../rust/kernel-rs/src -type f) \
-		$(RUST_MANIFEST) ../rust/kernel-rs/Cargo.toml $(RUST_TARGET) ../rust-toolchain.toml
-	cargo build \
+		$(RUST_MANIFEST) ../rust/Cargo.lock ../rust/kernel-rs/Cargo.toml \
+		$(RUST_TARGET) ../rust-toolchain.toml
+	RUSTC=$(RUST_RUSTC) $(RUST_CARGO) build \
 		-Z build-std=core,compiler_builtins \
 		-Z json-target-spec \
 		--manifest-path $(RUST_MANIFEST) \
@@ -60,7 +59,6 @@ $(RUST_LIBRARY): $(shell find ../rust/kernel-rs/src -type f) \
 $(TARGET): $(OBJ) $(RUST_LIBRARY) $(LIBRARY)
 	@echo "Linking $@"
 	$(LD) $(LDFLAGS) -o $@ $^
-
 
 gdb_symol:
 	@echo "generate symbol table...."

@@ -6,13 +6,13 @@ use core::marker::PhantomData;
 /// Constructing a port is safe because it does not access hardware. Reads and
 /// writes are unsafe: the caller must ensure that the port exists, the access
 /// width is correct, and the operation is valid for the current device state.
-struct Port<T> {
+pub struct Port<T> {
     number: u16,
     value_type: PhantomData<T>,
 }
 
 impl<T> Port<T> {
-    const fn new(number: u16) -> Self {
+    pub const fn new(number: u16) -> Self {
         Self {
             number,
             value_type: PhantomData,
@@ -21,7 +21,7 @@ impl<T> Port<T> {
 }
 
 impl Port<u8> {
-    unsafe fn read(&self) -> u8 {
+    pub unsafe fn read(&self) -> u8 {
         let value: u8;
         // SAFETY: The caller upholds the I/O-port contract documented above.
         unsafe {
@@ -35,7 +35,7 @@ impl Port<u8> {
         value
     }
 
-    unsafe fn write(&self, value: u8) {
+    pub unsafe fn write(&self, value: u8) {
         // SAFETY: The caller upholds the I/O-port contract documented above.
         unsafe {
             asm!(
@@ -49,7 +49,7 @@ impl Port<u8> {
 }
 
 impl Port<u16> {
-    unsafe fn read(&self) -> u16 {
+    pub unsafe fn read(&self) -> u16 {
         let value: u16;
         // SAFETY: The caller upholds the I/O-port contract documented above.
         unsafe {
@@ -63,7 +63,7 @@ impl Port<u16> {
         value
     }
 
-    unsafe fn write(&self, value: u16) {
+    pub unsafe fn write(&self, value: u16) {
         // SAFETY: The caller upholds the I/O-port contract documented above.
         unsafe {
             asm!(
@@ -77,7 +77,7 @@ impl Port<u16> {
 }
 
 impl Port<u32> {
-    unsafe fn read(&self) -> u32 {
+    pub unsafe fn read(&self) -> u32 {
         let value: u32;
         // SAFETY: The caller upholds the I/O-port contract documented above.
         unsafe {
@@ -91,7 +91,7 @@ impl Port<u32> {
         value
     }
 
-    unsafe fn write(&self, value: u32) {
+    pub unsafe fn write(&self, value: u32) {
         // SAFETY: The caller upholds the I/O-port contract documented above.
         unsafe {
             asm!(
