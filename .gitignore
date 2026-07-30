@@ -1,1 +1,3 @@
 /rust/target/
+/bin/
+/disk_img_file/*.img
