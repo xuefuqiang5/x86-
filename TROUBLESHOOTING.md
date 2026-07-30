@@ -66,9 +66,9 @@ x86_64-elf-ar
 早期顶层 `Makefile` 只判断 `bin/mbr.bin` 和 `bin/loader.bin` 是否存在，没有正确追踪：
 
 ```text
-loader/mbr.asm
-loader/loader.asm
-loader/boot.inc
+boot/mbr.asm
+boot/loader.asm
+boot/boot.inc
 ```
 
 修改源文件后直接执行 `make`，可能不会重新生成二进制文件，导致 QEMU 继续运行旧代码。这使调试结果看起来不稳定。

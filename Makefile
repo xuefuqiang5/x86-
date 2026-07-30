@@ -8,18 +8,22 @@ KERNEL_SECTOR_COUNT = 256
 
 all: write_into
 
-$(TARGET_DIR)/mbr.bin: loader/mbr.asm loader/boot.inc
-	$(MAKE) -C loader build
+$(TARGET_DIR)/mbr.bin: boot/mbr.asm boot/boot.inc
+	$(MAKE) -C boot build
 
-$(TARGET_DIR)/loader.bin: loader/loader.asm loader/boot.inc
-	$(MAKE) -C loader build
+$(TARGET_DIR)/loader.bin: boot/loader.asm boot/boot.inc
+	$(MAKE) -C boot build
 
-$(TARGET_DIR)/kernel: $(shell find kernel lib/kernel rust/kernel-rs/src -type f) \
-		rust/Cargo.toml rust/Cargo.lock rust/kernel-rs/Cargo.toml \
-		rust/targets/i686-x86-os.json rust-toolchain.toml
+$(TARGET_DIR)/kernel: $(shell find kernel/src kernel/arch -type f) \
+		Cargo.toml Cargo.lock kernel/Cargo.toml kernel/Makefile \
+		kernel/linker.ld targets/i686-x86-os.json rust-toolchain.toml
 	$(MAKE) -C kernel build
 
-write_into: $(TARGET_DIR)/mbr.bin $(TARGET_DIR)/loader.bin $(TARGET_DIR)/kernel
+$(DISK_IMG):
+	mkdir -p $(dir $@)
+	dd if=/dev/zero of=$@ bs=1048576 count=60
+
+write_into: $(DISK_IMG) $(TARGET_DIR)/mbr.bin $(TARGET_DIR)/loader.bin $(TARGET_DIR)/kernel
 	@kernel_size=$$(wc -c < $(TARGET_DIR)/kernel); \
 	max_size=$$(( $(KERNEL_SECTOR_COUNT) * 512 )); \
 	if [ $$kernel_size -gt $$max_size ]; then \
@@ -39,5 +43,5 @@ run-headless: write_into
 	$(QEMU) $(QEMUFLAGS) -display none -serial stdio -monitor none
 
 clean:
-	$(MAKE) -C loader clean
+	$(MAKE) -C boot clean
 	$(MAKE) -C kernel clean
