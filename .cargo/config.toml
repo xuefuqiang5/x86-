@@ -1,0 +1,8 @@
+[build]
+target = "targets/i686-x86-os.json"
+target-dir = "target"
+rustc = ".cargo/rustc-nightly"
+
+[unstable]
+build-std = ["core", "compiler_builtins"]
+json-target-spec = true

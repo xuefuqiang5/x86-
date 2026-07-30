@@ -1,4 +1,4 @@
 [toolchain]
 channel = "nightly"
-components = ["rust-src", "llvm-tools-preview"]
+components = ["rust-src", "llvm-tools-preview", "rust-analyzer"]
 profile = "minimal"

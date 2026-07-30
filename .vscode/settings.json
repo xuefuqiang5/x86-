@@ -1,0 +1,19 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "./Cargo.toml"
+  ],
+  "rust-analyzer.check.allTargets": false,
+  "rust-analyzer.cargo.target": "targets/i686-x86-os.json",
+  "rust-analyzer.cargo.extraArgs": [
+    "-Z",
+    "json-target-spec"
+  ],
+  "rust-analyzer.inlayHints.chainingHints.enable": false,
+  "rust-analyzer.inlayHints.closingBraceHints.enable": false,
+  "rust-analyzer.inlayHints.parameterHints.enable": false,
+  "rust-analyzer.inlayHints.typeHints.enable": false,
+  "files.associations": {
+    "*.asm": "asm-x86-nasm",
+    "*.inc": "asm-x86-nasm"
+  }
+}

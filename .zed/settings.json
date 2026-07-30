@@ -1,0 +1,21 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": [
+          "./Cargo.toml"
+        ],
+        "cargo": {
+          "target": "targets/i686-x86-os.json",
+          "extraArgs": [
+            "-Z",
+            "json-target-spec"
+          ]
+        },
+        "check": {
+          "allTargets": false
+        }
+      }
+    }
+  }
+}
