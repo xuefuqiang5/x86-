@@ -16,6 +16,12 @@ GDT_ADDR:
     VIDEO_GDT:
         dd 0x8000ffff
         dd 0x0040920b
+    RING3_CODE_DESC:
+        dd 0x0000ffff
+        dd 0x00cffa00
+    RING3_DATA_DESC:
+        dd 0x0000ffff
+        dd 0x00cff200
     gdt_ptr:
         dw $ - GDT_ADDR - 1
         dd GDT_ADDR

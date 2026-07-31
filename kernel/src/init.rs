@@ -7,6 +7,7 @@ unsafe extern "C" {
 pub fn init_all() {
     unsafe {
         crate::vga::clear();
+        crate::arch::x86::gdt::gdt_init();
         crate::interrupt::idt::idt_init();
         crate::interrupt::pic::pic_init();
         crate::timer::timer_init();
@@ -27,6 +28,10 @@ pub fn init_all() {
         );
         crate::task::thread::init_list();
         crate::task::thread::init_main_thread();
+        let current = crate::task::thread::running_thread();
+        crate::arch::x86::tss::set_esp0(
+            (current as usize + crate::task::thread::PAGE_SIZE as usize) as u32,
+        );
         crate::console::console_init_c();
         crate::input::keyboard::init_keyboard_c();
     }
