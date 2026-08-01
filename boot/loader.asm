@@ -22,6 +22,8 @@ GDT_ADDR:
     RING3_DATA_DESC:
         dd 0x0000ffff
         dd 0x00cff200
+    TSS_DESC:
+        dq 0
     gdt_ptr:
         dw $ - GDT_ADDR - 1
         dd GDT_ADDR

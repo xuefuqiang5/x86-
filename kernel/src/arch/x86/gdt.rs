@@ -36,6 +36,45 @@ struct Gdtr {
     base: u32,
 }
 
+const _: () = assert!(size_of::<Gdtr>() == 6);
+
+#[inline]
+unsafe fn read_gdtr() -> Gdtr {
+    let mut gdtr = Gdtr { limit: 0, base: 0 };
+    let address = core::ptr::addr_of_mut!(gdtr);
+    unsafe {
+        core::arch::asm!(
+            "sgdt [{}]",
+            in(reg) address,
+            options(nostack, preserves_flags),
+        );
+    }
+    gdtr
+}
+
+#[inline]
+unsafe fn load_task_register(selector: u16) {
+    unsafe {
+        core::arch::asm!(
+            "ltr ax",
+            in("ax") selector,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+#[inline]
+unsafe fn read_task_register() -> u16 {
+    let selector: u16;
+    unsafe {
+        core::arch::asm!(
+            "str ax",
+            out("ax") selector,
+            options(nostack, preserves_flags),
+        );
+    }
+    selector
+}
 /// Kernel GDT storage.
 ///
 /// Expected layout:
@@ -80,10 +119,8 @@ fn flat_data_descriptor(dpl: u32) -> u64 {
 /// matches the selected granularity.
 fn descriptor(base: u32, limit: u32, flags: u32) -> u64 {
     let low = (limit & 0xffff) | ((base & 0xffff) << 16);
-    let high = ((base >> 16) & 0xff)
-        | (flags & 0x00f0ff00)
-        | ((limit >> 16) & 0x0f)
-        | (base & 0xff000000);
+    let high =
+        ((base >> 16) & 0xff) | (flags & 0x00f0ff00) | ((limit >> 16) & 0x0f) | (base & 0xff000000);
 
     ((high as u64) << 32) | low as u64
 }
@@ -114,20 +151,25 @@ fn tss_descriptor(base: u32, limit: u32) -> u64 {
 /// Segment selectors must remain consistent with the table layout because the
 /// IDT and the existing assembly code currently use the fixed selector values.
 pub fn gdt_init() {
-    // TODO: Populate GDT, execute lgdt, reload segment registers, and execute ltr.
-    let _ = (
-        PRESENT,
-        DPL_RING3,
-        CODE,
-        DATA_RW,
-        CODE_RX,
-        GRANULARITY_4K,
-        OPERAND_32BIT,
-        size_of::<Gdtr>(),
-        size_of::<tss::TaskStateSegment>(),
-        flat_code_descriptor as fn(u32) -> u64,
-        flat_data_descriptor as fn(u32) -> u64,
-        descriptor as fn(u32, u32, u32) -> u64,
-        tss_descriptor as fn(u32, u32) -> u64,
-    );
+    // The loader already installed the active GDT. Extend its reserved TSS
+    // slot instead of replacing CS/DS while the kernel is bootstrapping.
+    let gdtr = unsafe { read_gdtr() };
+    let tss_index = (TSS_SELECTOR >> 3) as usize;
+    let offset = tss_index * size_of::<u64>();
+
+    assert!(gdtr.base != 0);
+    assert!(offset + size_of::<u64>() <= gdtr.limit as usize + 1);
+
+    let tss_base = tss::TSS.as_ptr() as u32;
+    let tss_limit = size_of::<tss::TaskStateSegment>() as u32 - 1;
+    let descriptor = tss_descriptor(tss_base, tss_limit);
+
+    unsafe {
+        let table = gdtr.base as *mut u64;
+        table.add(tss_index).write_volatile(descriptor);
+        load_task_register(TSS_SELECTOR);
+    }
+
+    let task_register = unsafe { read_task_register() };
+    assert!(task_register == TSS_SELECTOR);
 }

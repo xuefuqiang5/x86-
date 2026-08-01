@@ -73,6 +73,11 @@ impl TaskStateSegment {
 pub struct GlobalTss {
     inner: UnsafeCell<TaskStateSegment>,
 }
+impl GlobalTss {
+    pub fn as_ptr(&self) -> *mut TaskStateSegment {
+        self.inner.get()
+    }
+}
 
 unsafe impl Sync for GlobalTss {}
 
@@ -86,4 +91,3 @@ pub fn set_esp0(esp0: u32) {
         (*TSS.inner.get()).esp0 = esp0;
     }
 }
-
