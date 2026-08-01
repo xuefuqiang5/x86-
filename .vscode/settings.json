@@ -8,6 +8,9 @@
     "-Z",
     "json-target-spec"
   ],
+  "rust-analyzer.cargo.extraEnv": {
+    "CARGO_UNSTABLE_JSON_TARGET_SPEC": "true"
+  },
   "rust-analyzer.inlayHints.chainingHints.enable": false,
   "rust-analyzer.inlayHints.closingBraceHints.enable": false,
   "rust-analyzer.inlayHints.parameterHints.enable": false,

@@ -10,7 +10,10 @@
           "extraArgs": [
             "-Z",
             "json-target-spec"
-          ]
+          ],
+          "extraEnv": {
+            "CARGO_UNSTABLE_JSON_TARGET_SPEC": "true"
+          }
         },
         "check": {
           "allTargets": false

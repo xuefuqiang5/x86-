@@ -77,6 +77,12 @@ fn page_align_down(x: u32) -> u32 {
     x & !(PAGE_SIZE - 1)
 }
 
+impl TaskStruct {
+    pub fn kernel_stack_top(&self) -> u32 {
+        self as *const Self as usize as u32 + PAGE_SIZE
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn running_thread() -> *mut TaskStruct {
     let esp: u32;
@@ -294,6 +300,7 @@ pub extern "C" fn schedule() {
         assert!(!next_ptr.is_null());
         let next = &mut *task_from_general_tag(next_ptr);
         next.status = TASK_RUNNING;
+        crate::arch::x86::tss::set_esp0(next.kernel_stack_top());
         switch_to(cur, next);
     }
 }
