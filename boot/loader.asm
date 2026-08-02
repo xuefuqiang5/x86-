@@ -152,34 +152,32 @@ setup_page_table:
     mov ecx, 1024
     rep stosd
 
+    ; Clear the complete first page table. Only its first 256 entries are
+    ; populated below; the remaining entries are reserved for mappings that
+    ; the Rust memory manager creates on demand.
+    mov edi, PAGE_DIR_TABLE_POS + 0x1000
+    xor eax, eax
+    mov ecx, 1024
+    rep stosd
+
     ; Identity-map the first MiB and mirror it at 0xc0000000.
     mov eax, PAGE_DIR_TABLE_POS + 0x1000
-    or eax, PG_US_U | PG_RW_W | PG_P
+    or eax, PG_US_S | PG_RW_W | PG_P
     mov [PAGE_DIR_TABLE_POS], eax
     mov [PAGE_DIR_TABLE_POS + 0xc00], eax
 
     ; Make the final PDE recursively map the page directory itself.
     mov eax, PAGE_DIR_TABLE_POS
-    or eax, PG_US_U | PG_RW_W | PG_P
+    or eax, PG_US_S | PG_RW_W | PG_P
     mov [PAGE_DIR_TABLE_POS + 4092], eax
 
     mov edi, PAGE_DIR_TABLE_POS + 0x1000
-    mov eax, PG_US_U | PG_RW_W | PG_P
+    mov eax, PG_US_S | PG_RW_W | PG_P
     mov ecx, 256
 .create_identity_pte:
     stosd
     add eax, 4096
     loop .create_identity_pte
-
-    ; Prepare the remaining kernel-space PDEs for later mappings.
-    mov edi, PAGE_DIR_TABLE_POS + 769 * 4
-    mov eax, PAGE_DIR_TABLE_POS + 0x2000
-    or eax, PG_US_U | PG_RW_W | PG_P
-    mov ecx, 254
-.create_kernel_pde:
-    stosd
-    add eax, 0x1000
-    loop .create_kernel_pde
 
     popad
     ret
