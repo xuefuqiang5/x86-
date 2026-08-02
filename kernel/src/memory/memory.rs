@@ -1,4 +1,5 @@
 use crate::ds::bitmap::Bitmap;
+use core::ptr::NonNull;
 
 pub const PAGE_SIZE: u32 = 4096;
 pub const PG_P_1: u32 = 1;
@@ -14,6 +15,27 @@ const KERNEL_DYNAMIC_START: u32 = 0xc010_0000;
 const PAGE_ENTRY_ADDRESS_MASK: u32 = 0xffff_f000;
 const RECURSIVE_PAGE_TABLE_BASE: u32 = 0xffc0_0000;
 const RECURSIVE_PAGE_DIRECTORY_BASE: u32 = 0xffff_f000;
+pub const PAGE_DIRECTORY_ENTRY_COUNT: usize = 1024;
+pub const KERNEL_PDE_START: usize = 768;
+pub const RECURSIVE_PDE_INDEX: usize = 1023;
+
+/// A 32-bit x86 page directory.
+///
+/// A page directory contains 1024 32-bit entries and must occupy one
+/// page-aligned 4-KiB physical frame.
+#[repr(C, align(4096))]
+pub struct PageDirectory {
+    entries: [u32; PAGE_DIRECTORY_ENTRY_COUNT],
+}
+
+const _: () = assert!(core::mem::size_of::<PageDirectory>() == PAGE_SIZE as usize);
+
+/// Errors that can occur while creating a user page directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageDirectoryCreateError {
+    /// A kernel page could not be allocated for the new page directory.
+    KernelPageAllocationFailed,
+}
 
 fn get_pde(vaddr: u32) -> u32 {
     (vaddr >> 22) & 0x3ff
@@ -21,6 +43,88 @@ fn get_pde(vaddr: u32) -> u32 {
 
 fn get_pte(vaddr: u32) -> u32 {
     (vaddr >> 12) & 0x3ff
+}
+
+/// Reads the physical base address of the currently active page directory.
+#[inline]
+pub fn read_cr3() -> u32 {
+    let cr3: u32;
+
+    unsafe {
+        core::arch::asm!(
+            "mov {}, cr3",
+            out(reg) cr3,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+
+    cr3
+}
+
+/// Translates a virtual address through the currently active page tables.
+///
+/// The returned physical address includes the original offset within the page.
+/// Returns `None` if either the PDE or PTE is not present.
+///
+/// This function only reads the current paging structures. It never creates,
+/// removes, or modifies a mapping.
+fn active_virtual_to_physical(vaddr: u32) -> Option<u32> {
+    let pde_index = get_pde(vaddr);
+    let pte_index = get_pte(vaddr);
+
+    unsafe {
+        let page_directory = RECURSIVE_PAGE_DIRECTORY_BASE as *const u32;
+        let pde_ptr = page_directory.add(pde_index as usize);
+        let pde = core::ptr::read_volatile(pde_ptr);
+        if (pde & PG_P_1) == 0 {
+            return None;
+        }
+
+        let page_table = (RECURSIVE_PAGE_TABLE_BASE + pde_index * PAGE_SIZE) as *const u32;
+        let pte_ptr = page_table.add(pte_index as usize);
+        let pte = core::ptr::read_volatile(pte_ptr);
+
+        if (pte & PG_P_1) == 0 {
+            return None;
+        }
+        let physical_page = pte & PAGE_ENTRY_ADDRESS_MASK;
+        let page_offset = vaddr & (PAGE_SIZE - 1);
+
+        Some(physical_page | page_offset)
+    }
+}
+
+/// Allocates and initializes a page directory for a new user address space.
+///
+/// The user portion of the directory is left empty. Kernel PDEs are copied
+/// from the currently active page directory so kernel code and data remain
+/// accessible while the new directory is active.
+///
+/// The final PDE is rebuilt as a supervisor-only recursive mapping that points
+/// to the physical frame containing the new page directory.
+///
+/// This function only constructs the page directory. It does not load CR3,
+/// create user mappings, initialize a user virtual-address pool, or attach the
+/// directory to a task.
+///
+/// # Returns
+///
+/// Returns a kernel virtual pointer to the new page directory.
+///
+/// # Errors
+///
+/// Returns `PageDirectoryCreateError::KernelPageAllocationFailed` when a page
+/// cannot be allocated for the directory.
+///
+/// # Invariants
+///
+/// - Entries `[0, 768)` are not present.
+/// - Entries `[768, 1023)` share the current kernel mappings.
+/// - Entry `1023` recursively maps the new page directory.
+/// - All kernel and recursive mappings remain supervisor-only.
+/// - A failed operation must not leave partially allocated resources behind.
+pub fn create_user_page_directory() -> Result<NonNull<PageDirectory>, PageDirectoryCreateError> {
+    todo!("allocate and initialize a user page directory")
 }
 
 #[repr(C)]
