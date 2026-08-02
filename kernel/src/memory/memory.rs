@@ -124,7 +124,32 @@ fn active_virtual_to_physical(vaddr: u32) -> Option<u32> {
 /// - All kernel and recursive mappings remain supervisor-only.
 /// - A failed operation must not leave partially allocated resources behind.
 pub fn create_user_page_directory() -> Result<NonNull<PageDirectory>, PageDirectoryCreateError> {
-    todo!("allocate and initialize a user page directory")
+    let raw_page = page_allocate(1, PF_KERNEL);
+    let user_page_directory = NonNull::new(raw_page.cast::<PageDirectory>())
+        .ok_or(PageDirectoryCreateError::KernelPageAllocationFailed)?;
+
+    let page_directory_vaddr = user_page_directory.as_ptr() as usize as u32;
+    let page_directory_paddr = active_virtual_to_physical(page_directory_vaddr)
+        .expect("a page returned by page_allocate must be mapped");
+
+    unsafe {
+        core::ptr::write_bytes(
+            user_page_directory.cast::<u8>().as_ptr(),
+            0,
+            PAGE_SIZE as usize,
+        );
+
+        let current_directory = &*(RECURSIVE_PAGE_DIRECTORY_BASE as *const PageDirectory);
+        let new_directory = &mut *user_page_directory.as_ptr();
+
+        new_directory.entries[KERNEL_PDE_START..RECURSIVE_PDE_INDEX]
+            .copy_from_slice(&current_directory.entries[KERNEL_PDE_START..RECURSIVE_PDE_INDEX]);
+
+        new_directory.entries[RECURSIVE_PDE_INDEX] =
+            (page_directory_paddr & PAGE_ENTRY_ADDRESS_MASK) | PAGE_KERNEL_RW;
+    }
+
+    Ok(user_page_directory)
 }
 
 #[repr(C)]
