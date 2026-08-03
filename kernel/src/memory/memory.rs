@@ -1,5 +1,6 @@
 use crate::ds::bitmap::Bitmap;
 use core::ptr::NonNull;
+use core::sync::atomic::AtomicU32;
 
 pub const PAGE_SIZE: u32 = 4096;
 pub const PG_P_1: u32 = 1;
@@ -18,6 +19,12 @@ const RECURSIVE_PAGE_DIRECTORY_BASE: u32 = 0xffff_f000;
 pub const PAGE_DIRECTORY_ENTRY_COUNT: usize = 1024;
 pub const KERNEL_PDE_START: usize = 768;
 pub const RECURSIVE_PDE_INDEX: usize = 1023;
+
+/// Physical base address of the original kernel page directory.
+///
+/// A value of zero means that `mem_init` has not saved the active kernel CR3
+/// value yet.
+static KERNEL_PAGE_DIRECTORY_PADDR: AtomicU32 = AtomicU32::new(0);
 
 /// A 32-bit x86 page directory.
 ///
@@ -59,6 +66,58 @@ pub fn read_cr3() -> u32 {
     }
 
     cr3
+}
+
+/// Loads a physical page-directory address into CR3.
+///
+/// Loading CR3 activates a different virtual address space and flushes all
+/// non-global TLB entries.
+///
+/// # Safety
+///
+/// `page_directory_paddr` must be 4-KiB aligned and must point to a valid
+/// 32-bit x86 page directory. The directory must map the kernel code, data,
+/// stack, and paging structures required immediately after the switch.
+#[inline]
+unsafe fn write_cr3(page_directory_paddr: u32) {
+    unsafe {
+        core::arch::asm!(
+            "mov cr3, {0:e}",
+            in(reg) page_directory_paddr,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+/// Activates a user page directory or restores the kernel page directory.
+///
+/// `Some(page_directory)` selects the supplied user address space. `None`
+/// selects the original kernel address space saved during memory
+/// initialization.
+///
+/// This function only changes the active page directory. It does not create
+/// mappings, attach the directory to a task, or update the TSS kernel stack.
+pub fn activate_page_directory(page_directory: Option<NonNull<PageDirectory>>) {
+    let page_directory_paddr = match page_directory {
+        Some(page_directory) => {
+            active_virtual_to_physical(page_directory.as_ptr() as usize as u32)
+                .expect("the page directory must be mapped")
+                & PAGE_ENTRY_ADDRESS_MASK
+        }
+        None => {
+            let kernel_page_directory =
+                KERNEL_PAGE_DIRECTORY_PADDR.load(core::sync::atomic::Ordering::Relaxed);
+            assert_ne!(
+                kernel_page_directory, 0,
+                "the kernel page directory is not initialized"
+            );
+
+            kernel_page_directory
+        }
+    };
+    unsafe {
+        write_cr3(page_directory_paddr);
+    }
 }
 
 /// Translates a virtual address through the currently active page tables.
@@ -282,6 +341,16 @@ pub fn mem_pool_init(total_mem: u32) {
 }
 
 pub fn mem_init() {
+    let kernel_page_directory_paddr = read_cr3() & PAGE_ENTRY_ADDRESS_MASK;
+    assert_ne!(
+        kernel_page_directory_paddr, 0,
+        "the kernel page directory address is invalid"
+    );
+    KERNEL_PAGE_DIRECTORY_PADDR.store(
+        kernel_page_directory_paddr,
+        core::sync::atomic::Ordering::Relaxed,
+    );
+
     unsafe {
         use crate::vga::{put_char, put_int_hex, put_str};
 
