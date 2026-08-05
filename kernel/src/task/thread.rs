@@ -1,22 +1,140 @@
-use crate::ds::list::ListHead;
+//! Task representation and scheduler interface.
+//!
+//! This module intentionally contains only the data layout and the public
+//! function skeletons needed by the rest of the kernel.  The implementation is
+//! left as a sequence of small exercises.  Keeping the interfaces in one place
+//! makes the dependencies between thread creation, address-space activation,
+//! TSS maintenance, and the final assembly context switch explicit.
+//!
+//! A schedulable task owns one 4 KiB kernel page with the following layout:
+//!
+//! ```text
+//! low address                                       high address
+//! +----------------+-------------------------------+
+//! | TaskStruct     | kernel stack (grows downward) |
+//! +----------------+-------------------------------+
+//! ^ task address                         task + PAGE_SIZE
+//! ```
+//!
+//! Kernel threads execute on this stack directly.  A user task additionally
+//! owns a user stack in its private address space.  The user stack pointer is
+//! not stored in `self_kstack`: it is saved in `IntrStack::esp` whenever an
+//! interrupt or system call crosses from ring 3 to ring 0.
 
-pub const MAGIC_NUM: u32 = 0x19940625;
+use core::ffi::c_void;
+use core::ptr::NonNull;
+
+use crate::ds::list::{ListHead, list_init};
+use crate::main;
+use crate::memory::PageDirectory;
+
+/// Sentinel written near the bottom of every task's kernel stack page.
+///
+/// Interrupt code checks this value to detect a kernel-stack overflow before
+/// corrupted stack data can silently damage the task control block.
+pub const MAGIC_NUM: u32 = 0x1994_0625;
+
+/// Size of the page shared by a `TaskStruct` and its kernel stack.
 pub const PAGE_SIZE: u32 = 4096;
 
+// These integer constants are kept for compatibility with the existing C ABI
+// and callers.  A later cleanup may replace them with a `#[repr(u32)]` enum,
+// but only after all assembly and FFI boundaries have been audited.
+pub const TASK_RUNNING: u32 = 0;
+pub const TASK_READY: u32 = 1;
+pub const TASK_BLOCKED: u32 = 2;
+pub const TASK_WAITING: u32 = 3;
+pub const TASK_HANGING: u32 = 4;
+pub const TASK_DIED: u32 = 5;
+
+/// Entry function executed by a newly created kernel thread.
+pub type ThreadFunc = extern "C" fn(*mut c_void);
+
+/// Legacy spelling retained while C-facing modules are migrated to Rust names.
+#[allow(non_camel_case_types)]
+pub type thread_func = ThreadFunc;
+
+/// Legacy spelling retained for the semaphore and IO-queue interfaces.
+#[allow(non_camel_case_types)]
+pub type task_struct = TaskStruct;
+
+/// The scheduler-owned control block for one execution unit.
+///
+/// `TaskStruct` must remain at the lowest address of its dedicated 4 KiB page.
+/// `running_thread()` relies on that invariant by rounding the current ESP down
+/// to a page boundary.  The first field must also remain `self_kstack`, because
+/// `switch_to` accesses it through a fixed assembly offset.
+///
+/// A kernel thread has `pgdir == None` and executes in the kernel page
+/// directory.  A user task has `pgdir == Some(...)`; the pointer identifies its
+/// page-directory object through a kernel virtual address.  Before running that
+/// task, the scheduler must translate the object to a physical address and load
+/// it into CR3.
 #[repr(C)]
 pub struct TaskStruct {
+    /// Saved kernel ESP used by the assembly context switch.
+    ///
+    /// This value moves as contexts are saved and restored.  It must never be
+    /// used as TSS `esp0`; `esp0` is always `self address + PAGE_SIZE`.
     pub self_kstack: *mut u32,
+
+    /// One of the `TASK_*` state constants above.
     pub status: u32,
+
+    /// Base time-slice length assigned to the task.
     pub priority: u8,
+
+    /// NUL-terminated diagnostic name.  At most 15 non-NUL bytes are stored.
     pub name: [u8; 16],
+
+    /// Remaining timer ticks in the current time slice.
     pub ticks: u8,
+
+    /// Total number of timer ticks for which this task has run.
     pub elapsed_ticks: u32,
+
+    /// Intrusive-list node used by the ready queue or a blocking wait queue.
+    ///
+    /// One node cannot belong to two lists at the same time.  A blocked task
+    /// therefore leaves the ready queue before a semaphore or IO queue links
+    /// this node into its waiter list.
     pub general_tag: ListHead,
+
+    /// Intrusive-list node used only by the global list of all tasks.
     pub all_list_tag: ListHead,
-    pub pgdir: *mut core::ffi::c_void,
+
+    /// Address space owned by a user task, or `None` for a kernel thread.
+    ///
+    /// The page directory itself is allocated from kernel memory so the kernel
+    /// can inspect it regardless of which user address space is active.
+    pub pgdir: Option<NonNull<PageDirectory>>,
+
+    /// Kernel-stack overflow sentinel; initialized to `MAGIC_NUM`.
     pub stack_magic: u32,
 }
 
+impl TaskStruct {
+    /// Return the fixed ring-0 stack top for this task.
+    ///
+    /// This value is written to TSS `esp0` before a user task runs.  The CPU
+    /// loads it automatically when an interrupt changes privilege from ring 3
+    /// to ring 0.
+    pub fn kernel_stack_top(&self) -> u32 {
+        ((self as *const Self as usize as u32) + PAGE_SIZE) as u32
+    }
+}
+
+/// Stack image produced by the interrupt-entry assembly.
+///
+/// The field order is an ABI contract with the interrupt stubs and with the
+/// order in which the CPU pushes its return frame.  Do not reorder fields
+/// without changing the assembly at the same time.
+///
+/// When an interrupt originates in user mode, `esp` and `ss` contain the user
+/// stack position to which `iret` will return.  This is how the kernel preserves
+/// a user task's stack across preemption; no separate `user_esp` field is needed
+/// in `TaskStruct`.  For a same-privilege interrupt, the entry assembly must
+/// still construct the layout expected by the Rust code.
 #[repr(C)]
 pub struct IntrStack {
     pub vec_no: u32,
@@ -36,304 +154,207 @@ pub struct IntrStack {
     pub eip: extern "C" fn(),
     pub cs: u32,
     pub eflags: u32,
-    pub esp: *mut core::ffi::c_void,
+    pub esp: *mut c_void,
     pub ss: u32,
 }
 
+/// Initial kernel-stack frame consumed by `switch_to` for a new thread.
+///
+/// `thread_create()` places this structure below the reserved `IntrStack`.
+/// The first context switch restores the callee-saved registers and returns to
+/// `kernel_thread`, which enables interrupts and calls `function(func_arg)`.
+/// Its order must continue to match the assembly implementation of `switch_to`.
 #[repr(C)]
 pub struct ThreadStack {
     pub ebp: u32,
     pub ebx: u32,
     pub edi: u32,
     pub esi: u32,
-    pub eip: extern "C" fn(
-        thread_func: extern "C" fn(*mut core::ffi::c_void),
-        func_arg: *mut core::ffi::c_void,
-    ),
+    pub eip: extern "C" fn(ThreadFunc, *mut c_void),
     pub unused_retaddr: extern "C" fn(),
-    pub function: extern "C" fn(*mut core::ffi::c_void),
-    pub func_arg: *mut core::ffi::c_void,
+    pub function: ThreadFunc,
+    pub func_arg: *mut c_void,
 }
 
-#[allow(non_camel_case_types)]
-pub type thread_func = extern "C" fn(*mut core::ffi::c_void);
-#[allow(non_camel_case_types)]
-pub type task_struct = TaskStruct;
-
-pub const TASK_RUNNING: u32 = 0;
-pub const TASK_READY: u32 = 1;
-pub const TASK_BLOCKED: u32 = 2;
-pub const TASK_WAITING: u32 = 3;
-pub const TASK_HANGING: u32 = 4;
-pub const TASK_DIED: u32 = 5;
-
 unsafe extern "C" {
+    /// Save `cur`'s kernel ESP, load `next`'s kernel ESP, and restore the next
+    /// task's callee-saved registers.  Address-space and TSS changes must happen
+    /// in Rust before this low-level switch is called.
     pub fn switch_to(cur: *mut TaskStruct, next: *mut TaskStruct);
+
+    /// Legacy interrupt-control functions kept for the existing ABI.
     pub fn intr_enable() -> i32;
     pub fn intr_disable() -> i32;
 }
 
-fn page_align_down(x: u32) -> u32 {
-    x & !(PAGE_SIZE - 1)
-}
-
-impl TaskStruct {
-    pub fn kernel_stack_top(&self) -> u32 {
-        self as *const Self as usize as u32 + PAGE_SIZE
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn running_thread() -> *mut TaskStruct {
-    let esp: u32;
-    unsafe {
-        core::arch::asm!("mov {0}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
-    }
-    page_align_down(esp) as *mut TaskStruct
-}
-
-unsafe fn streq(a: *const u8, b: *const u8) -> bool {
-    let mut pa = a;
-    let mut pb = b;
-    loop {
-        let ca = unsafe { *pa };
-        if ca == 0 || ca != unsafe { *pb } {
-            return ca == unsafe { *pb };
-        }
-        pa = unsafe { pa.add(1) };
-        pb = unsafe { pb.add(1) };
-    }
-}
-
-unsafe fn copy_thread_name(dst: *mut u8, src: *const u8) {
-    let mut len = 0;
-    while len < 15 {
-        let c = unsafe { *src.add(len) };
-        unsafe {
-            *dst.add(len) = c;
-        }
-        if c == 0 {
-            return;
-        }
-        len += 1;
-    }
-    unsafe {
-        *dst.add(len) = 0;
-    }
-}
-
-unsafe fn task_from_general_tag(tag: *mut ListHead) -> *mut TaskStruct {
-    unsafe {
-        tag.cast::<u8>()
-            .sub(core::mem::offset_of!(TaskStruct, general_tag))
-            .cast::<TaskStruct>()
-    }
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn kernel_thread(
-    function: extern "C" fn(*mut core::ffi::c_void),
-    func_arg: *mut core::ffi::c_void,
-) {
-    unsafe {
-        intr_enable();
-    }
-    function(func_arg);
-    unsafe {
-        intr_disable();
-        let cur = running_thread();
-        (*cur).status = TASK_DIED;
-        schedule();
-    }
-    loop {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack));
-        }
-    }
-}
-
-pub fn thread_create(
-    pthread: *mut TaskStruct,
-    function: extern "C" fn(*mut core::ffi::c_void),
-    func_arg: *mut core::ffi::c_void,
-) {
-    unsafe {
-        (*pthread).self_kstack =
-            ((*pthread).self_kstack as usize - core::mem::size_of::<IntrStack>()) as *mut u32;
-        (*pthread).self_kstack =
-            ((*pthread).self_kstack as usize - core::mem::size_of::<ThreadStack>()) as *mut u32;
-        let kthread_stack = &mut *((*pthread).self_kstack as *mut ThreadStack);
-        kthread_stack.eip = kernel_thread;
-        kthread_stack.function = function;
-        kthread_stack.func_arg = func_arg;
-        kthread_stack.ebp = 0;
-        kthread_stack.ebx = 0;
-        kthread_stack.edi = 0;
-        kthread_stack.esi = 0;
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn init_thread(pthread: *mut TaskStruct, name: *const u8, prio: i32) {
-    unsafe {
-        use crate::vga::put_str;
-
-        let is_main = streq(name, b"main\0".as_ptr());
-        if !is_main {
-            core::ptr::write_bytes(pthread as *mut u8, 0, PAGE_SIZE as usize);
-        }
-        copy_thread_name((*pthread).name.as_mut_ptr(), name);
-        if is_main {
-            (*pthread).status = TASK_RUNNING;
-        } else {
-            (*pthread).status = TASK_READY;
-        }
-        (*pthread).self_kstack = (pthread as usize + PAGE_SIZE as usize) as *mut u32;
-        (*pthread).elapsed_ticks = 0;
-        let priority = prio.clamp(1, u8::MAX as i32) as u8;
-        (*pthread).priority = priority;
-        (*pthread).ticks = priority;
-        (*pthread).pgdir = core::ptr::null_mut();
-        (*pthread).stack_magic = MAGIC_NUM;
-
-        put_str(b"init \0".as_ptr());
-        put_str(name);
-        put_str(b" done \n\0".as_ptr());
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn thread_start(
-    name: *const u8,
-    prio: i32,
-    function: extern "C" fn(*mut core::ffi::c_void),
-    func_arg: *mut core::ffi::c_void,
-) -> *mut TaskStruct {
-    unsafe {
-        use crate::ds::list::{list_find_c, list_pushback_c};
-        use crate::memory::memory::page_allocate_c;
-        use crate::vga::put_str;
-
-        let thread = page_allocate_c(1, 1) as *mut TaskStruct;
-        if thread.is_null() {
-            return core::ptr::null_mut();
-        }
-        init_thread(thread, name, prio);
-        thread_create(thread, function, func_arg);
-        assert!(list_find_c(&raw mut READY_LIST_HEAD, &raw mut (*thread).general_tag) == 0);
-        list_pushback_c(&raw mut (*thread).general_tag, &raw mut READY_LIST_HEAD);
-        assert!(list_find_c(&raw mut ALL_LIST_HEAD, &raw mut (*thread).all_list_tag) == 0);
-        list_pushback_c(&raw mut (*thread).all_list_tag, &raw mut ALL_LIST_HEAD);
-        put_str(b"start done \n\0".as_ptr());
-        thread
-    }
-}
-
+/// Ready-to-run tasks, ordered by the scheduler's current queue policy.
+///
+/// The list contains each task's `general_tag`, not a pointer to the beginning
+/// of `TaskStruct`.  The scheduler must recover the owner using `offset_of!`.
 #[unsafe(no_mangle)]
 static mut READY_LIST_HEAD: ListHead = ListHead {
     next: core::ptr::null_mut(),
     prev: core::ptr::null_mut(),
 };
+
+/// Every task known to the kernel, including running and blocked tasks.
 #[unsafe(no_mangle)]
 static mut ALL_LIST_HEAD: ListHead = ListHead {
     next: core::ptr::null_mut(),
     prev: core::ptr::null_mut(),
 };
 
+/// Return the task whose kernel stack is currently active.
+///
+/// The implementation should read ESP and round it down to a 4 KiB boundary.
+/// It is valid only while every task control block and kernel stack obey the
+/// one-page layout documented at the top of this module.
 #[unsafe(no_mangle)]
-pub extern "C" fn init_list() {
-    use crate::ds::list::list_init_c;
-    use crate::vga::put_str;
-
-    list_init_c(&raw mut READY_LIST_HEAD);
-    list_init_c(&raw mut ALL_LIST_HEAD);
-    put_str(b"list done \n\0".as_ptr());
+pub extern "C" fn running_thread() -> *mut TaskStruct {
+    let esp: u32;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, esp", 
+            out(reg) esp, 
+           options(nostack, preserves_flags), 
+        );
+    }
+    (esp & !(PAGE_SIZE - 1)) as *mut TaskStruct
 }
 
+/// Trampoline entered the first time a kernel thread is scheduled.
+///
+/// It should enable interrupts, invoke the supplied function, and mark the task
+/// dead if that function returns.  A dead task must never be put back on the
+/// ready queue.
+extern "C" fn kernel_thread(_function: ThreadFunc, _func_arg: *mut c_void) {
+    todo!("run a new kernel thread and handle its return path")
+}
+
+/// Build the initial stack frames for a task that has never run.
+///
+/// Reserve space for `IntrStack`, then place `ThreadStack` below it and set
+/// `self_kstack` to that frame.  The values written here must make the first
+/// `switch_to` return into `kernel_thread(function, func_arg)`.
+pub fn thread_create(
+    _pthread: *mut TaskStruct,
+    _function: ThreadFunc,
+    _func_arg: *mut c_void,
+) {
+    todo!("construct the task's first kernel context")
+}
+
+/// Initialize a task control block without making the task runnable.
+///
+/// Initialize the name, state, time-slice fields, intrusive-list nodes, address
+/// space, kernel-stack top, and stack sentinel.  The boot task is special: its
+/// page already contains the live boot stack and therefore must not be cleared.
+#[unsafe(no_mangle)]
+pub extern "C" fn init_thread(_pthread: *mut TaskStruct, _name: *const u8, _prio: i32) {
+    todo!("initialize one TaskStruct and its kernel-stack metadata")
+}
+
+/// Allocate, initialize, and publish a new kernel thread.
+///
+/// The implementation should allocate exactly one kernel page, call
+/// `init_thread`, construct the initial stack with `thread_create`, then insert
+/// the task into both the ready list and the all-task list while interrupts are
+/// in a state that makes those list updates atomic.
+///
+/// Returns null if the task page cannot be allocated.
+#[unsafe(no_mangle)]
+pub extern "C" fn thread_start(
+    _name: *const u8,
+    _prio: i32,
+    _function: ThreadFunc,
+    _func_arg: *mut c_void,
+) -> *mut TaskStruct {
+    todo!("allocate and publish a kernel thread")
+}
+
+/// Initialize the scheduler's intrusive-list sentinels.
+///
+/// This must run before the boot task or any newly allocated task is inserted.
+#[unsafe(no_mangle)]
+pub extern "C" fn init_list() {
+    unsafe {
+        
+    }
+}
+
+/// Turn the already-running boot context into the kernel's main task.
+///
+/// No new page or stack is allocated.  Derive its `TaskStruct` from the current
+/// ESP, initialize it as `TASK_RUNNING`, and add only its `all_list_tag` to the
+/// global all-task list.
 #[unsafe(no_mangle)]
 pub extern "C" fn init_main_thread() {
     unsafe {
-        use crate::ds::list::{list_find_c, list_pushback_c};
-        use crate::vga::put_str;
-
-        let m = running_thread();
-        init_thread(m, b"main\0".as_ptr(), 31);
-        assert!(list_find_c(&raw mut ALL_LIST_HEAD, &raw mut (*m).all_list_tag) == 0);
-        list_pushback_c(&raw mut (*m).all_list_tag, &raw mut ALL_LIST_HEAD);
-        put_str(b"main done \n\0".as_ptr());
-    }
-}
-
-pub fn is_enable_interrupts() -> bool {
-    let flags: u32;
-    unsafe {
-        core::arch::asm!(
-            "pushfd",
-            "pop {0}",
-            out(reg) flags,
-            options(nomem, preserves_flags)
+        let main_task_struct = &mut *running_thread();
+        main_task_struct.self_kstack = main_task_struct.kernel_stack_top() as *mut u32;
+        main_task_struct.status = TASK_RUNNING;
+        main_task_struct.priority = 31;
+        main_task_struct.name = *b"main\0\0\0\0\0\0\0\0\0\0\0\0";
+        main_task_struct.ticks = main_task_struct.priority;
+        main_task_struct.elapsed_ticks = 0;
+        crate::ds::list::list_init(&raw mut main_task_struct.general_tag);
+        crate::ds::list::list_init(&raw mut main_task_struct.all_list_tag);
+        main_task_struct.pgdir = None;
+        main_task_struct.stack_magic = MAGIC_NUM;
+        crate::ds::list::list_pushback(
+            &raw mut main_task_struct.all_list_tag,
+            &raw mut ALL_LIST_HEAD,
         );
     }
-    (flags & (1 << 9)) != 0
 }
 
+/// Report whether the x86 EFLAGS interrupt-enable bit is set.
+pub fn is_enable_interrupts() -> bool {
+    todo!("read EFLAGS.IF without changing the interrupt state")
+}
+
+/// C ABI wrapper for `is_enable_interrupts`.
 #[unsafe(no_mangle)]
 pub extern "C" fn is_enable_interrupts_c() -> i32 {
-    is_enable_interrupts() as i32
+    todo!("return the interrupt-enable state as zero or one")
 }
 
+/// Select and activate the next runnable task.
+///
+/// The caller must have interrupts disabled.  A complete implementation should
+/// perform the transition in this order:
+///
+/// 1. Requeue the current task only if it is still `TASK_RUNNING`.
+/// 2. Remove one task from the ready queue and mark it `TASK_RUNNING`.
+/// 3. Load the task's page directory, or the kernel page directory when
+///    `next.pgdir` is `None`.
+/// 4. Set TSS `esp0` to `next.kernel_stack_top()` so the next ring-3 interrupt
+///    enters the correct kernel stack.
+/// 5. Call `switch_to(cur, next)` only after CR3 and TSS describe `next`.
+///
+/// A task's user ESP does not need to be loaded here.  It remains in that task's
+/// saved `IntrStack` and is restored by the interrupt-return path (`iret`).
 #[unsafe(no_mangle)]
 pub extern "C" fn schedule() {
-    unsafe {
-        use crate::ds::list::{list_find_c, list_pop_c, list_pushback_c};
-
-        assert!(!is_enable_interrupts());
-        let cur = running_thread();
-        if (*cur).status == TASK_RUNNING {
-            assert!(list_find_c(&raw mut READY_LIST_HEAD, &raw mut (*cur).general_tag) == 0);
-            list_pushback_c(&raw mut (*cur).general_tag, &raw mut READY_LIST_HEAD);
-            (*cur).ticks = (*cur).priority;
-            (*cur).status = TASK_READY;
-        }
-
-        let next_ptr = list_pop_c(&raw mut READY_LIST_HEAD);
-        assert!(!next_ptr.is_null());
-        let next = &mut *task_from_general_tag(next_ptr);
-        next.status = TASK_RUNNING;
-        crate::arch::x86::tss::set_esp0(next.kernel_stack_top());
-        switch_to(cur, next);
-    }
+    todo!("choose, activate, and context-switch to the next ready task")
 }
 
+/// Move the current task from running state to a blocked state.
+///
+/// `stat` must be `TASK_BLOCKED`, `TASK_WAITING`, or `TASK_HANGING`.  Disable
+/// interrupts before changing state and scheduling another task, then restore
+/// the previous interrupt state only after this task is eventually resumed.
 #[unsafe(no_mangle)]
-pub extern "C" fn thread_block(stat: u32) {
-    unsafe {
-        use crate::interrupt::isr::{intr_disable_c, set_intr_status};
-
-        assert!(stat == TASK_BLOCKED || stat == TASK_WAITING || stat == TASK_HANGING);
-        let old_status = intr_disable_c();
-        let cur = running_thread();
-        (*cur).status = stat;
-        schedule();
-        set_intr_status(old_status);
-    }
+pub extern "C" fn thread_block(_stat: u32) {
+    todo!("block the current task and invoke the scheduler")
 }
 
+/// Make one blocked task ready to run.
+///
+/// Disable interrupts while validating the old state, inserting `general_tag`
+/// into the ready queue, and setting `TASK_READY`.  The function must reject a
+/// task that is already present in the ready queue to protect list integrity.
 #[unsafe(no_mangle)]
-pub extern "C" fn thread_unblock(pthread: *mut TaskStruct) {
-    unsafe {
-        use crate::ds::list::{list_find_c, list_pushfront_c};
-        use crate::interrupt::isr::{intr_disable_c, set_intr_status};
-
-        let old_status = intr_disable_c();
-        assert!(
-            (*pthread).status == TASK_BLOCKED
-                || (*pthread).status == TASK_WAITING
-                || (*pthread).status == TASK_HANGING
-        );
-        assert!(list_find_c(&raw mut READY_LIST_HEAD, &raw mut (*pthread).general_tag) == 0);
-        list_pushfront_c(&raw mut (*pthread).general_tag, &raw mut READY_LIST_HEAD);
-        (*pthread).status = TASK_READY;
-        set_intr_status(old_status);
-    }
+pub extern "C" fn thread_unblock(_pthread: *mut TaskStruct) {
+    todo!("move a blocked task back to the ready queue")
 }

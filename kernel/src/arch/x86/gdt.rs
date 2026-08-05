@@ -16,6 +16,8 @@ pub const USER_CODE_SELECTOR: u16 = 0x20 | 0x3;
 pub const USER_DATA_SELECTOR: u16 = 0x28 | 0x3;
 pub const TSS_SELECTOR: u16 = 0x30;
 
+const KERNEL_VIRTUAL_BASE: u32 = 0xc000_0000;
+
 // The TSS descriptor occupies two consecutive eight-byte GDT entries.
 const GDT_ENTRY_COUNT: usize = 8;
 
@@ -50,6 +52,17 @@ unsafe fn read_gdtr() -> Gdtr {
         );
     }
     gdtr
+}
+
+#[inline]
+unsafe fn load_gdtr(gdtr: *const Gdtr) {
+    unsafe {
+        core::arch::asm!(
+            "lgdt [{}]",
+            in(reg) gdtr,
+            options(nostack, preserves_flags),
+        );
+    }
 }
 
 #[inline]
@@ -152,24 +165,44 @@ fn tss_descriptor(base: u32, limit: u32) -> u64 {
 /// IDT and the existing assembly code currently use the fixed selector values.
 pub fn gdt_init() {
     // The loader already installed the active GDT. Extend its reserved TSS
-    // slot instead of replacing CS/DS while the kernel is bootstrapping.
-    let gdtr = unsafe { read_gdtr() };
+    // slot and relocate GDTR to the high-half alias before user page
+    // directories remove the loader's low identity mapping.
+    let loader_gdtr = unsafe { read_gdtr() };
+    let loader_gdt_base = loader_gdtr.base;
+    let gdt_limit = loader_gdtr.limit;
     let tss_index = (TSS_SELECTOR >> 3) as usize;
     let offset = tss_index * size_of::<u64>();
 
-    assert!(gdtr.base != 0);
-    assert!(offset + size_of::<u64>() <= gdtr.limit as usize + 1);
+    assert!(loader_gdt_base != 0);
+    assert!(offset + size_of::<u64>() <= gdt_limit as usize + 1);
+
+    let kernel_gdt_base = if loader_gdt_base < KERNEL_VIRTUAL_BASE {
+        loader_gdt_base
+            .checked_add(KERNEL_VIRTUAL_BASE)
+            .expect("the relocated GDT address must fit in 32 bits")
+    } else {
+        loader_gdt_base
+    };
 
     let tss_base = tss::TSS.as_ptr() as u32;
     let tss_limit = size_of::<tss::TaskStateSegment>() as u32 - 1;
     let descriptor = tss_descriptor(tss_base, tss_limit);
+    let kernel_gdtr = Gdtr {
+        limit: gdt_limit,
+        base: kernel_gdt_base,
+    };
 
     unsafe {
-        let table = gdtr.base as *mut u64;
+        let table = kernel_gdt_base as *mut u64;
         table.add(tss_index).write_volatile(descriptor);
+        load_gdtr(core::ptr::addr_of!(kernel_gdtr));
         load_task_register(TSS_SELECTOR);
     }
 
+    let active_gdtr = unsafe { read_gdtr() };
+    let active_gdt_base = active_gdtr.base;
     let task_register = unsafe { read_task_register() };
+
+    assert!(active_gdt_base == kernel_gdt_base);
     assert!(task_register == TSS_SELECTOR);
 }

@@ -201,8 +201,10 @@ pub fn create_user_page_directory() -> Result<NonNull<PageDirectory>, PageDirect
         let current_directory = &*(RECURSIVE_PAGE_DIRECTORY_BASE as *const PageDirectory);
         let new_directory = &mut *user_page_directory.as_ptr();
 
-        new_directory.entries[KERNEL_PDE_START..RECURSIVE_PDE_INDEX]
-            .copy_from_slice(&current_directory.entries[KERNEL_PDE_START..RECURSIVE_PDE_INDEX]);
+        for index in KERNEL_PDE_START..RECURSIVE_PDE_INDEX {
+            let entry = core::ptr::read_volatile(&raw const current_directory.entries[index]);
+            core::ptr::write_volatile(&raw mut new_directory.entries[index], entry);
+        }
 
         new_directory.entries[RECURSIVE_PDE_INDEX] =
             (page_directory_paddr & PAGE_ENTRY_ADDRESS_MASK) | PAGE_KERNEL_RW;
@@ -360,6 +362,7 @@ pub fn mem_init() {
         put_char(b'\n');
         put_str(b"mem_init start\n\0".as_ptr());
         mem_pool_init(TOTAL_MEM);
+        verify_page_directory_activation();
         put_str(b"mem_init done\n\0".as_ptr());
     }
 }
@@ -495,6 +498,40 @@ pub fn page_allocate(cnt: u32, pool_flag: u32) -> *mut core::ffi::c_void {
         var_vaddr += PAGE_SIZE;
     }
     vaddr
+}
+fn verify_page_directory_activation() {
+    let kernel_cr3 = read_cr3() & PAGE_ENTRY_ADDRESS_MASK;
+    let user_page_directory = create_user_page_directory().expect("fail to create page directory");
+    let user_page_directory_paddr =
+        active_virtual_to_physical(user_page_directory.as_ptr() as usize as u32)
+            .expect("test page directory must be mapped")
+            & PAGE_ENTRY_ADDRESS_MASK;
+
+    assert_ne!(user_page_directory_paddr, kernel_cr3);
+    activate_page_directory(Some(user_page_directory));
+    assert_eq!(
+        read_cr3() & PAGE_ENTRY_ADDRESS_MASK,
+        user_page_directory_paddr
+    );
+    // Reaching this point proves that kernel code is still mapped.
+    unsafe {
+        crate::vga::put_str(b"page directory switch passed\n\0".as_ptr());
+    }
+
+    // Force an actual access to the current kernel stack.
+    let mut stack_probe = 0x1234_5678u32;
+    unsafe {
+        core::ptr::write_volatile(&raw mut stack_probe, 0x8765_4321);
+
+        assert_eq!(
+            core::ptr::read_volatile(&raw const stack_probe),
+            0x8765_4321,
+        );
+    }
+
+    activate_page_directory(None);
+
+    assert_eq!(read_cr3() & PAGE_ENTRY_ADDRESS_MASK, kernel_cr3);
 }
 
 #[unsafe(no_mangle)]
